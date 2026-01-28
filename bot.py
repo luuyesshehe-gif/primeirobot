@@ -2,57 +2,85 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import os
+import json
+import asyncio
 
+# ======================
+# CONFIGURAÇÃO
+# ======================
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID = 1316931391430197268
-ROLE_2X_ID = 1317717808737419295
+ROLE_2X = 1317717808737419295
 
-LOG_VERIFICACAO_ID = 1465942893209583838
-LOG_REMOVIDO_ID = 1465946692191785041
+LOG_VERIFY = 1465942893209583838
+LOG_REMOVE = 1465946692191785041
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LIST_FILE = os.path.join(BASE_DIR, "booster_list.json")
+
+# ======================
+# INTENTS
+# ======================
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="-", intents=intents)
 tree = bot.tree
-
+GUILD_OBJ = discord.Object(id=GUILD_ID)
 
 # ======================
-# FUNÇÃO PRINCIPAL
+# JSON
 # ======================
-async def verificar_2x_boosters():
+def load_list():
+    if not os.path.exists(LIST_FILE):
+        return []
+    with open(LIST_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_list(data):
+    with open(LIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4)
+
+booster_list = load_list()
+
+# ======================
+# LOG
+# ======================
+async def send_log(channel_id, msg):
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
-
-    role_2x = guild.get_role(ROLE_2X_ID)
-    log_channel = guild.get_channel(LOG_VERIFICACAO_ID)
-
-    if not role_2x or not log_channel:
-        return
-
-    for member in guild.members:
-        # booster com 2 meses ou mais
-        if member.premium_since:
-            if role_2x not in member.roles:
-                await member.add_roles(role_2x)
-                await log_channel.send(
-                    f"""```VERIFICAÇÃO DE 2X BOOSTERS
-
-<{member.id}> recebeu seu cargo de 2x booster!
-```"""
-                )
-
+    channel = guild.get_channel(channel_id)
+    if channel:
+        await channel.send(msg)
 
 # ======================
-# TASK 5 EM 5 MINUTOS
+# VERIFICAÇÃO AUTOMÁTICA
 # ======================
 @tasks.loop(minutes=5)
-async def verificar_loop():
-    await verificar_2x_boosters()
+async def verificar_boosters():
+    guild = bot.get_guild(GUILD_ID)
+    role = guild.get_role(ROLE_2X)
 
+    removidos = []
+
+    for user_id in booster_list.copy():
+        member = guild.get_member(user_id)
+        if not member or member.premium_since is None:
+            if member and role in member.roles:
+                await member.remove_roles(role)
+            booster_list.remove(user_id)
+            removidos.append(user_id)
+
+    if removidos:
+        save_list(booster_list)
+        for uid in removidos:
+            await send_log(
+                LOG_REMOVE,
+                f"```2X BOOSTER REMOVIDO\n\n<{uid}> teve seu cargo removido por parar de boostar```"
+            )
 
 # ======================
 # EVENTOS
@@ -60,72 +88,82 @@ async def verificar_loop():
 @bot.event
 async def on_ready():
     print(f"🤖 Online como {bot.user}")
+    await tree.sync(guild=GUILD_OBJ)
 
-    await tree.sync(guild=discord.Object(id=GUILD_ID))
-
-    # VERIFICA IMEDIATAMENTE
-    await verificar_2x_boosters()
-
-    # INICIA LOOP
-    if not verificar_loop.is_running():
-        verificar_loop.start()
-
-    print("✅ Verificação iniciada")
-
+    if not verificar_boosters.is_running():
+        verificar_boosters.start()
 
 @bot.event
 async def on_member_update(before, after):
-    guild = after.guild
-    role_2x = guild.get_role(ROLE_2X_ID)
-
-    # GANHOU BOOST
-    if before.premium_since is None and after.premium_since:
-        if role_2x not in after.roles:
-            await after.add_roles(role_2x)
-
-            log_channel = guild.get_channel(LOG_VERIFICACAO_ID)
-            if log_channel:
-                await log_channel.send(
-                    f"""```DEU SEU 2X BOOSTERS
-
-<{after.id}> recebeu seu cargo de 2x booster!
-```"""
-                )
-
-    # REMOVEU BOOST
     if before.premium_since and after.premium_since is None:
-        if role_2x in after.roles:
-            await after.remove_roles(role_2x)
+        if after.id in booster_list:
+            role = after.guild.get_role(ROLE_2X)
+            if role in after.roles:
+                await after.remove_roles(role)
+            booster_list.remove(after.id)
+            save_list(booster_list)
 
-            log_channel = guild.get_channel(LOG_REMOVIDO_ID)
-            if log_channel:
-                await log_channel.send(
-                    f"""```2X BOOSTER REMOVIDO
-
-<{after.id}> teve seu cargo de 2x booster removido por retirar seu boost!
-```"""
-                )
-
+            await send_log(
+                LOG_REMOVE,
+                f"```2X BOOSTER REMOVIDO\n\n<{after.id}> removeu seus boosters```"
+            )
 
 # ======================
-# SLASH COMMAND
+# SLASH COMMANDS
 # ======================
-@tree.command(
-    name="forcarverificacao",
-    description="Força a verificação de 2x boosters",
-    guild=discord.Object(id=GUILD_ID)
-)
-async def forcarverificacao(interaction: discord.Interaction):
+@tree.command(name="addmemberlist", description="Adiciona membro 2x booster", guild=GUILD_OBJ)
+async def addmemberlist(interaction, membro: discord.Member):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message(
-            "❌ Sem permissão", ephemeral=True
-        )
+        return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
 
-    await verificar_2x_boosters()
-    await interaction.response.send_message(
-        "✅ Verificação executada com sucesso", ephemeral=True
+    if membro.id in booster_list:
+        return await interaction.response.send_message("⚠️ Já está na lista", ephemeral=True)
+
+    booster_list.append(membro.id)
+    save_list(booster_list)
+
+    role = interaction.guild.get_role(ROLE_2X)
+    if role not in membro.roles:
+        await membro.add_roles(role)
+
+    await send_log(
+        LOG_VERIFY,
+        f"```DEU SEU 2X BOOSTERS\n\n<{membro.id}> recebeu o cargo de 2x booster```"
     )
 
+    await interaction.response.send_message("✅ Adicionado à lista 2x booster")
+
+@tree.command(name="removememberlist", description="Remove membro da lista 2x", guild=GUILD_OBJ)
+async def removememberlist(interaction, membro: discord.Member):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
+
+    if membro.id not in booster_list:
+        return await interaction.response.send_message("⚠️ Não está na lista", ephemeral=True)
+
+    booster_list.remove(membro.id)
+    save_list(booster_list)
+
+    role = interaction.guild.get_role(ROLE_2X)
+    if role in membro.roles:
+        await membro.remove_roles(role)
+
+    await send_log(
+        LOG_REMOVE,
+        f"```2X BOOSTER REMOVIDO\n\n<{membro.id}> removido manualmente```"
+    )
+
+    await interaction.response.send_message("✅ Removido da lista")
+
+@tree.command(name="checkboosterlist", description="Ver lista de 2x boosters", guild=GUILD_OBJ)
+async def checkboosterlist(interaction):
+    if not booster_list:
+        return await interaction.response.send_message("📭 Lista vazia", ephemeral=True)
+
+    msg = "**📋 Lista 2x Boosters:**\n"
+    msg += "\n".join(f"<{uid}>" for uid in booster_list)
+
+    await interaction.response.send_message(msg, ephemeral=True)
 
 # ======================
 # START
