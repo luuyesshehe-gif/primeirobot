@@ -1,24 +1,18 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
 from discord import app_commands
 import os
 import json
-import asyncio
-import re
 
 # ======================
-# CONFIGURAÇÃO
+# CONFIGURAÇÕES
 # ======================
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID = 1316931391430197268
-ROLE_2X = 1317717808737419295
+GUILD_OBJ = discord.Object(id=GUILD_ID)
 
-LOG_VERIFY = 1465942893209583838
-LOG_REMOVE = 1465946692191785041
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LIST_FILE = os.path.join(BASE_DIR, "booster_list.json")
+DATA_FILE = "booster_list.json"
 
 # ======================
 # INTENTS
@@ -27,171 +21,147 @@ intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="-", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-GUILD_OBJ = discord.Object(id=GUILD_ID)
 
 # ======================
-# JSON
+# JSON HELPERS
 # ======================
-def load_list():
-    if not os.path.exists(LIST_FILE):
+def load_data():
+    if not os.path.exists(DATA_FILE):
         return []
-    with open(LIST_FILE, "r", encoding="utf-8") as f:
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_list(data):
-    with open(LIST_FILE, "w", encoding="utf-8") as f:
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
-booster_list = load_list()
+booster_list = load_data()
 
 # ======================
-# LOG
+# VIEW (DROPDOWN)
 # ======================
-async def send_log(channel_id, msg):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-    channel = guild.get_channel(channel_id)
-    if channel:
-        await channel.send(msg)
-
-# ======================
-# VERIFICAÇÃO AUTOMÁTICA
-# ======================
-@tasks.loop(minutes=5)
-async def verificar_boosters():
-    guild = bot.get_guild(GUILD_ID)
-    role = guild.get_role(ROLE_2X)
-
-    for user_id in booster_list.copy():
-        member = guild.get_member(user_id)
-        if not member or member.premium_since is None:
-            if member and role in member.roles:
-                await member.remove_roles(role)
-
-            booster_list.remove(user_id)
-            save_list(booster_list)
-
-            await send_log(
-                LOG_REMOVE,
-                f"```2X BOOSTER REMOVIDO\n\n<{user_id}> teve seu cargo removido por parar de boostar```"
+class RemoveDropdown(discord.ui.Select):
+    def __init__(self, members):
+        options = [
+            discord.SelectOption(
+                label=f"{m['name']}",
+                description=f"ID: {m['id']}",
+                value=str(m['id'])
             )
+            for m in members
+        ]
+
+        super().__init__(
+            placeholder="Remover membro da lista",
+            min_values=1,
+            max_values=len(options),
+            options=options
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        global booster_list
+        removed = []
+
+        for value in self.values:
+            booster_list = [m for m in booster_list if str(m["id"]) != value]
+            removed.append(f"<@{value}>")
+
+        save_data(booster_list)
+
+        await interaction.response.send_message(
+            f"❌ Removidos da lista:\n" + "\n".join(removed),
+            ephemeral=True
+        )
+
+class RemoveView(discord.ui.View):
+    def __init__(self, members):
+        super().__init__(timeout=120)
+        self.add_item(RemoveDropdown(members))
 
 # ======================
-# EVENTOS
+# EVENTO
 # ======================
 @bot.event
 async def on_ready():
-    print(f"🤖 Online como {bot.user}")
     await tree.sync(guild=GUILD_OBJ)
-
-    if not verificar_boosters.is_running():
-        verificar_boosters.start()
-
-@bot.event
-async def on_member_update(before, after):
-    if before.premium_since and after.premium_since is None:
-        if after.id in booster_list:
-            role = after.guild.get_role(ROLE_2X)
-            if role in after.roles:
-                await after.remove_roles(role)
-
-            booster_list.remove(after.id)
-            save_list(booster_list)
-
-            await send_log(
-                LOG_REMOVE,
-                f"```2X BOOSTER REMOVIDO\n\n<{after.id}> removeu seus boosters```"
-            )
+    print(f"🤖 Bot online como {bot.user}")
+    print("✅ Slash commands sincronizados")
 
 # ======================
 # SLASH COMMANDS
 # ======================
-def extract_ids(text):
-    return [int(x) for x in re.findall(r"\d{17,20}", text)]
-
-@tree.command(name="addmemberlist", description="Adiciona membros 2x booster", guild=GUILD_OBJ)
-async def addmemberlist(interaction, membros: str):
+@tree.command(name="addmemberlist", description="Adiciona membros à lista 2x booster", guild=GUILD_OBJ)
+async def addmemberlist(interaction: discord.Interaction, membros: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
 
-    ids = extract_ids(membros)
-    guild = interaction.guild
-    role = guild.get_role(ROLE_2X)
+    added = []
+    for m in membros.replace(" ", "").split(","):
+        user_id = int(m.replace("<@", "").replace(">", ""))
 
-    adicionados = []
-
-    for uid in ids:
-        member = guild.get_member(uid)
-        if not member or uid in booster_list:
+        if any(x["id"] == user_id for x in booster_list):
             continue
 
-        booster_list.append(uid)
-        if role not in member.roles:
-            await member.add_roles(role)
+        user = interaction.guild.get_member(user_id)
+        booster_list.append({
+            "id": user_id,
+            "name": user.display_name if user else str(user_id)
+        })
+        added.append(f"<@{user_id}>")
 
-        adicionados.append(member)
+    save_data(booster_list)
 
-        await send_log(
-            LOG_VERIFY,
-            f"```DEU SEU 2X BOOSTERS\n\n<{uid}> recebeu o cargo de 2x booster```"
-        )
+    await interaction.response.send_message(
+        "✅ Adicionados:\n" + ("\n".join(added) if added else "Nenhum"),
+        ephemeral=True
+    )
 
-    save_list(booster_list)
-    await interaction.response.send_message(f"✅ {len(adicionados)} membros adicionados", ephemeral=True)
-
-@tree.command(name="removememberlist", description="Remove membros da lista 2x", guild=GUILD_OBJ)
-async def removememberlist(interaction, membros: str):
+@tree.command(name="removememberlist", description="Remove membros da lista 2x booster", guild=GUILD_OBJ)
+async def removememberlist(interaction: discord.Interaction, membros: str):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
 
-    ids = extract_ids(membros)
-    guild = interaction.guild
-    role = guild.get_role(ROLE_2X)
+    removed = []
+    global booster_list
 
-    removidos = []
+    for m in membros.replace(" ", "").split(","):
+        user_id = int(m.replace("<@", "").replace(">", ""))
+        if any(x["id"] == user_id for x in booster_list):
+            booster_list = [x for x in booster_list if x["id"] != user_id]
+            removed.append(f"<@{user_id}>")
 
-    for uid in ids:
-        if uid not in booster_list:
-            continue
+    save_data(booster_list)
 
-        member = guild.get_member(uid)
-        booster_list.remove(uid)
+    await interaction.response.send_message(
+        "❌ Removidos:\n" + ("\n".join(removed) if removed else "Nenhum"),
+        ephemeral=True
+    )
 
-        if member and role in member.roles:
-            await member.remove_roles(role)
-
-        removidos.append(uid)
-
-        await send_log(
-            LOG_REMOVE,
-            f"```2X BOOSTER REMOVIDO\n\n<{uid}> removido manualmente```"
-        )
-
-    save_list(booster_list)
-    await interaction.response.send_message(f"✅ {len(removidos)} membros removidos", ephemeral=True)
-
-@tree.command(name="checkboosterlist", description="Ver lista 2x boosters", guild=GUILD_OBJ)
-async def checkboosterlist(interaction):
+@tree.command(name="checkboosterlist", description="Mostra a lista de 2x boosters", guild=GUILD_OBJ)
+async def checkboosterlist(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
 
     if not booster_list:
         return await interaction.response.send_message("📭 Lista vazia", ephemeral=True)
 
-    guild = interaction.guild
-    msg = "✨︱ **Lista 2x Boosters:**\n\n"
+    embed = discord.Embed(
+        title="✨ | Lista 2x Boosters",
+        color=0x9b59b6
+    )
 
-    for uid in booster_list:
-        member = guild.get_member(uid)
-        if member:
-            msg += f"Member: {member.name} ︱ ID: <@{uid}>\n"
-        else:
-            msg += f"Member: Desconhecido ︱ ID: <@{uid}>\n"
+    for m in booster_list:
+        embed.add_field(
+            name="Member",
+            value=f"<@{m['id']}> ︱ ID: `{m['id']}`",
+            inline=False
+        )
 
-    await interaction.response.send_message(msg, ephemeral=True)
+    view = RemoveView(booster_list)
+
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 # ======================
 # START
