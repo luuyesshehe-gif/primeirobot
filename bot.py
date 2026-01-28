@@ -42,7 +42,7 @@ async def send_log(channel_id, embed):
     if channel:
         await channel.send(embed=embed)
 
-# ================= EMBEDS PROFISSIONAIS =================
+# ================= EMBEDS =================
 def embed_verify(member, origem="Automática"):
     embed = discord.Embed(
         title="🟢 Cargo 2x Booster Aplicado",
@@ -154,12 +154,6 @@ class AddMemberModal(discord.ui.Modal, title="Adicionar Membros à Lista"):
         save_booster_list()
         await interaction.response.send_message(f"✅ {len(ids)} membros adicionados à lista", ephemeral=True)
 
-class BoosterPanelView(discord.ui.View):
-    def __init__(self, members):
-        super().__init__(timeout=None)
-        self.add_item(BoosterSelect(members))
-        self.add_item(AddMemberButton())
-
 class AddMemberButton(discord.ui.Button):
     def __init__(self):
         super().__init__(style=discord.ButtonStyle.green, label="➕ Adicionar Membro", emoji="➕")
@@ -167,15 +161,36 @@ class AddMemberButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(AddMemberModal())
 
-# ================= SLASH COMMANDS =================
-@tree.command(name="painelbooster", description="Painel de gerenciamento de 2x Boosters", guild=GUILD_OBJ)
+class BoosterPanelView(discord.ui.View):
+    def __init__(self, members):
+        super().__init__(timeout=None)
+        self.add_item(BoosterSelect(members))
+        self.add_item(AddMemberButton())
+
+# ================= SLASH COMMAND OTIMIZADO =================
+@tree.command(
+    name="painelbooster",
+    description="Painel de gerenciamento de 2x Boosters",
+    guild=GUILD_OBJ
+)
 async def painel(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
         return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
 
+    # Deferir a interação para evitar timeout
+    await interaction.response.defer(ephemeral=True)
+
     guild = interaction.guild
-    members = [guild.get_member(uid) for uid in booster_list if guild.get_member(uid)]
-    await interaction.response.send_message(embed=embed_painel(), view=BoosterPanelView(members), ephemeral=True)
+
+    # Carregar membros de forma segura
+    members = []
+    for uid in booster_list:
+        member = guild.get_member(uid)
+        if member:
+            members.append(member)
+
+    # Enviar resposta real
+    await interaction.followup.send(embed=embed_painel(), view=BoosterPanelView(members), ephemeral=True)
 
 # ================= READY =================
 @bot.event
