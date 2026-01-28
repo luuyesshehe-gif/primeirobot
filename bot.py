@@ -2,91 +2,57 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import os
-import json
-import asyncio
 
-# ======================
-# CONFIGURAÇÃO
-# ======================
-TOKEN = os.getenv("DISCORD_TOKEN")  # ou coloque direto como string
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID = 1316931391430197268
-ROLE_2X = 1317717808737419295
+ROLE_2X_ID = 1317717808737419295
 
-LOG_VERIFICACAO = 1465942893209583838
-LOG_REMOCAO = 1465946692191785041
+LOG_VERIFICACAO_ID = 1465942893209583838
+LOG_REMOVIDO_ID = 1465946692191785041
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_FILE = os.path.join(BASE_DIR, "boosts.json")
-
-# ======================
-# INTENTS
-# ======================
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
 
-bot = commands.Bot(command_prefix="-", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-GUILD_OBJ = discord.Object(id=GUILD_ID)
+
 
 # ======================
-# JSON
+# FUNÇÃO PRINCIPAL
 # ======================
-def load_boosts():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_boosts(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
-
-boosts = load_boosts()
-
-# ======================
-# LOG
-# ======================
-async def send_log(channel_id: int, message: str):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-    channel = guild.get_channel(channel_id)
-    if channel:
-        await channel.send(message)
-
-# ======================
-# VERIFICAÇÃO PRINCIPAL
-# ======================
-async def executar_verificacao():
+async def verificar_2x_boosters():
     guild = bot.get_guild(GUILD_ID)
     if not guild:
         return
 
-    await guild.chunk()
-    role = guild.get_role(ROLE_2X)
+    role_2x = guild.get_role(ROLE_2X_ID)
+    log_channel = guild.get_channel(LOG_VERIFICACAO_ID)
+
+    if not role_2x or not log_channel:
+        return
 
     for member in guild.members:
-        uid = str(member.id)
-        total = boosts.get(uid, 0)
+        # booster com 2 meses ou mais
+        if member.premium_since:
+            if role_2x not in member.roles:
+                await member.add_roles(role_2x)
+                await log_channel.send(
+                    f"""```VERIFICAÇÃO DE 2X BOOSTERS
 
-        if total >= 2 and role not in member.roles:
-            await member.add_roles(role)
+<{member.id}> recebeu seu cargo de 2x booster!
+```"""
+                )
 
-            await send_log(
-                LOG_VERIFICACAO,
-                f"""```VERIFICAÇÃO DE 2X BOOSTERS
-
-<{member.id}> recebeu seu cargo de 2x booster!```"""
-            )
 
 # ======================
 # TASK 5 EM 5 MINUTOS
 # ======================
 @tasks.loop(minutes=5)
-async def verificar_automatico():
-    await executar_verificacao()
+async def verificar_loop():
+    await verificar_2x_boosters()
+
 
 # ======================
 # EVENTOS
@@ -95,67 +61,71 @@ async def verificar_automatico():
 async def on_ready():
     print(f"🤖 Online como {bot.user}")
 
-    await tree.sync(guild=GUILD_OBJ)
+    await tree.sync(guild=discord.Object(id=GUILD_ID))
 
-    guild = bot.get_guild(GUILD_ID)
-    await guild.chunk()
+    # VERIFICA IMEDIATAMENTE
+    await verificar_2x_boosters()
 
-    # 🔥 VERIFICA NA HORA
-    await executar_verificacao()
+    # INICIA LOOP
+    if not verificar_loop.is_running():
+        verificar_loop.start()
 
-    if not verificar_automatico.is_running():
-        verificar_automatico.start()
+    print("✅ Verificação iniciada")
 
-    print("✅ Bot iniciado + verificação imediata executada")
 
-# ======================
-# BOOST EVENTOS
-# ======================
 @bot.event
-async def on_member_update(before: discord.Member, after: discord.Member):
-    role = after.guild.get_role(ROLE_2X)
-    uid = str(after.id)
+async def on_member_update(before, after):
+    guild = after.guild
+    role_2x = guild.get_role(ROLE_2X_ID)
 
-    # DEU BOOST
-    if before.premium_since is None and after.premium_since is not None:
-        boosts[uid] = boosts.get(uid, 0) + 1
-        save_boosts(boosts)
+    # GANHOU BOOST
+    if before.premium_since is None and after.premium_since:
+        if role_2x not in after.roles:
+            await after.add_roles(role_2x)
 
-        if boosts[uid] >= 2 and role not in after.roles:
-            await after.add_roles(role)
+            log_channel = guild.get_channel(LOG_VERIFICACAO_ID)
+            if log_channel:
+                await log_channel.send(
+                    f"""```DEU SEU 2X BOOSTERS
 
-            await send_log(
-                LOG_VERIFICACAO,
-                f"""```DEU SEU 2X BOOSTERS
+<{after.id}> recebeu seu cargo de 2x booster!
+```"""
+                )
 
-<{after.id}> recebeu seu cargo de 2x booster!```"""
-            )
+    # REMOVEU BOOST
+    if before.premium_since and after.premium_since is None:
+        if role_2x in after.roles:
+            await after.remove_roles(role_2x)
 
-    # TIROU BOOST
-    if before.premium_since is not None and after.premium_since is None:
-        boosts[uid] = max(boosts.get(uid, 1) - 1, 0)
-        save_boosts(boosts)
+            log_channel = guild.get_channel(LOG_REMOVIDO_ID)
+            if log_channel:
+                await log_channel.send(
+                    f"""```2X BOOSTER REMOVIDO
 
-        if boosts[uid] < 2 and role in after.roles:
-            await after.remove_roles(role)
+<{after.id}> teve seu cargo de 2x booster removido por retirar seu boost!
+```"""
+                )
 
-            await send_log(
-                LOG_REMOCAO,
-                f"""```2X BOOSTER REMOVIDO
-
-<{after.id}> teve seu cargo de 2x booster removido por retirar seu 2x booster!```"""
-            )
 
 # ======================
 # SLASH COMMAND
 # ======================
-@tree.command(name="forcarverificacao", description="Força verificação de 2x boosters", guild=GUILD_OBJ)
+@tree.command(
+    name="forcarverificacao",
+    description="Força a verificação de 2x boosters",
+    guild=discord.Object(id=GUILD_ID)
+)
 async def forcarverificacao(interaction: discord.Interaction):
     if not interaction.user.guild_permissions.administrator:
-        return await interaction.response.send_message("❌ Sem permissão", ephemeral=True)
+        return await interaction.response.send_message(
+            "❌ Sem permissão", ephemeral=True
+        )
 
-    await executar_verificacao()
-    await interaction.response.send_message("✅ Verificação forçada executada", ephemeral=True)
+    await verificar_2x_boosters()
+    await interaction.response.send_message(
+        "✅ Verificação executada com sucesso", ephemeral=True
+    )
+
 
 # ======================
 # START
