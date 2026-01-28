@@ -1,25 +1,17 @@
 import discord
 from discord.ext import commands, tasks
-import os
-import json
+import os, json
 
-# ======================
-# CONFIG
-# ======================
 TOKEN = os.getenv("DISCORD_TOKEN")
 
 GUILD_ID = 1316931391430197268
 ROLE_2X = 1317717808737419295
 
-LOG_ADD_IMEDIATO = 1465942893209583838
-LOG_VERIFICACAO = 146594289320958383
-LOG_REMOVIDO = 1465946692191785041
+LOG_VERIFICACAO = 1465942893209583838
+LOG_REMOCAO = 1465946692191785041
 
 DATA_FILE = "boosts.json"
 
-# ======================
-# INTENTS
-# ======================
 intents = discord.Intents.default()
 intents.members = True
 intents.guilds = True
@@ -45,42 +37,61 @@ boosts = load_boosts()
 # LOG
 # ======================
 async def send_log(channel_id, msg):
-    guild = bot.get_guild(GUILD_ID)
-    if not guild:
-        return
-    channel = guild.get_channel(channel_id)
+    channel = bot.get_channel(channel_id)
     if channel:
         await channel.send(msg)
 
 # ======================
-# EVENTO BOOST (IMEDIATO)
+# EVENTOS
 # ======================
 @bot.event
+async def on_ready():
+    print(f"🤖 Online como {bot.user}")
+    verificar_2x.start()
+
+@bot.event
 async def on_member_update(before, after):
+    uid = str(after.id)
+    role = after.guild.get_role(ROLE_2X)
+
+    # GANHOU BOOST
     if before.premium_since is None and after.premium_since:
-        uid = str(after.id)
         boosts[uid] = boosts.get(uid, 0) + 1
         save_boosts(boosts)
 
-        if boosts[uid] >= 2:
-            role = after.guild.get_role(ROLE_2X)
-            if role not in after.roles:
-                await after.add_roles(role)
-                await send_log(
-                    LOG_ADD_IMEDIATO,
-                    f"""DEU SEU 2X BOOSTERS
+        if boosts[uid] >= 2 and role not in after.roles:
+            await after.add_roles(role)
+            await send_log(
+                LOG_VERIFICACAO,
+                f"""VERIFICAÇÃO DE 2X BOOSTERS
 
 <{after.id}> recebeu seu cargo de 2x booster!"""
-                )
+            )
+
+    # PERDEU BOOST
+    if before.premium_since and after.premium_since is None:
+        boosts[uid] = max(boosts.get(uid, 0) - 1, 0)
+        save_boosts(boosts)
+
+        if boosts[uid] < 2 and role in after.roles:
+            await after.remove_roles(role)
+            await send_log(
+                LOG_REMOCAO,
+                f"""2X BOOSTER REMOVIDO
+
+<{after.id}> teve seu cargo de 2x booster removido por retirar seu 2x booster!"""
+            )
 
 # ======================
-# VERIFICAÇÃO 10 MIN
+# VERIFICAÇÃO AUTOMÁTICA (SÓ ADD)
 # ======================
-@tasks.loop(minutes=10)
+@tasks.loop(minutes=5)
 async def verificar_2x():
     guild = bot.get_guild(GUILD_ID)
-    role = guild.get_role(ROLE_2X)
+    if not guild:
+        return
 
+    role = guild.get_role(ROLE_2X)
     for member in guild.members:
         uid = str(member.id)
         if boosts.get(uid, 0) >= 2 and role not in member.roles:
@@ -91,36 +102,6 @@ async def verificar_2x():
 
 <{member.id}> recebeu seu cargo de 2x booster!"""
             )
-
-# ======================
-# REMOÇÃO 15 MIN
-# ======================
-@tasks.loop(minutes=15)
-async def remover_2x():
-    guild = bot.get_guild(GUILD_ID)
-    role = guild.get_role(ROLE_2X)
-
-    for member in guild.members:
-        uid = str(member.id)
-        if boosts.get(uid, 0) < 2 and role in member.roles:
-            await member.remove_roles(role)
-            await send_log(
-                LOG_REMOVIDO,
-                f"""2X BOOSTER REMOVIDO
-
-<{member.id}> teve seu cargo de 2x booster removido por retirar seu 2x booster!"""
-            )
-
-# ======================
-# READY
-# ======================
-@bot.event
-async def on_ready():
-    print(f"🤖 Online como {bot.user}")
-    if not verificar_2x.is_running():
-        verificar_2x.start()
-    if not remover_2x.is_running():
-        remover_2x.start()
 
 # ======================
 # START
